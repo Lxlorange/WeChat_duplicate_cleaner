@@ -13,7 +13,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.db = DatabaseManager()
         self.target_dir = None
-        self.global_migration_dir = None  # 全局迁移目录
+        self.global_migration_dir = None
         self.scan_thread = None
 
         self.init_ui()
@@ -26,11 +26,9 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
 
-        # --- 区域 1：顶部路径选择 ---
         top_group = QGroupBox("基础设置")
         top_layout = QVBoxLayout()
 
-        # 微信目录选择
         path_layout = QHBoxLayout()
         self.lbl_path = QLabel("请选择'WeChat Files'目录或具体微信号目录")
         self.lbl_path.setStyleSheet("color: gray;")
@@ -40,7 +38,6 @@ class MainWindow(QMainWindow):
         path_layout.addWidget(self.lbl_path)
         top_layout.addLayout(path_layout)
 
-        # 迁移目录选择 (全局)
         mig_layout = QHBoxLayout()
         self.lbl_mig_path = QLabel("默认隔离/归档目录: (未设置，将在扫描时询问)")
         self.lbl_mig_path.setStyleSheet("color: gray;")
@@ -65,7 +62,6 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_cold, "❄️ 冷数据归档 (MsgAttach)")
         layout.addWidget(self.tabs)
 
-        # --- 区域 3：日志与进度 ---
         self.progress = QProgressBar()
         self.progress.setValue(0)
         layout.addWidget(self.progress)
@@ -77,7 +73,6 @@ class MainWindow(QMainWindow):
     def init_dedup_tab(self):
         layout = QVBoxLayout(self.tab_dedup)
 
-        # 1. 文件类型筛选
         filter_group = QGroupBox("文件类型筛选")
         filter_layout = QHBoxLayout()
         self.chk_doc = QCheckBox("文档 (Word/PDF/Excel)");
@@ -85,7 +80,7 @@ class MainWindow(QMainWindow):
         self.chk_vid = QCheckBox("视频 (MP4/MOV)");
         self.chk_vid.setChecked(True)
         self.chk_img = QCheckBox("图片 (JPG/PNG)");
-        self.chk_img.setChecked(False)  # 图片太多，默认关
+        self.chk_img.setChecked(False)
         self.chk_zip = QCheckBox("压缩包 (ZIP/RAR)");
         self.chk_zip.setChecked(True)
 
@@ -126,7 +121,7 @@ class MainWindow(QMainWindow):
     def init_cold_tab(self):
         layout = QVBoxLayout(self.tab_cold)
 
-        info = QLabel("💡 说明：自动识别选定目录下的所有微信号 (wxid_xxx/FileStorage/MsgAttach)，"
+        info = QLabel("自动识别选定目录下的所有微信号 (wxid_xxx/FileStorage/MsgAttach)，"
                       "将超过指定时间的加密/未知文件迁移走。")
         info.setWordWrap(True)
         layout.addWidget(info)
@@ -146,11 +141,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(btn_run)
         layout.addStretch()
 
-    # --- 逻辑槽函数 ---
 
     def log(self, text):
         self.txt_log.append(text)
-        # 自动滚动到底部
         self.txt_log.moveCursor(self.txt_log.textCursor().End)
 
     def select_source_dir(self):
@@ -203,7 +196,6 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "扫描完成", "分析结束，请查看日志。\n如需清理，请点击'执行清理'按钮。")
 
     def run_clean_dedup(self):
-        # 如果设置了全局目录，直接用；否则询问
         dest = self.global_migration_dir
         if not dest:
             dest = QFileDialog.getExistingDirectory(self, "选择隔离区存储目录")
@@ -219,8 +211,8 @@ class MainWindow(QMainWindow):
 
         try:
             folder, count, size = CoreLogic.move_files(files_to_move, dest, "dedup")
-            self.log(f"清理成功！已移至: {folder}")
-            QMessageBox.information(self, "成功", f"移动了 {count} 个文件\n释放空间: {Utils.format_size(size)}")
+            self.log(f"清理成功！已移至{folder}")
+            QMessageBox.information(self, "成功", f"移动了{count}个文件\n释放空间: {Utils.format_size(size)}")
             self.btn_clean_dedup.setEnabled(False)
         except Exception as e:
             QMessageBox.critical(self, "清理失败", str(e))
@@ -236,18 +228,16 @@ class MainWindow(QMainWindow):
         if not dest: return
 
         days = self.spin_days.value()
-        self.log(f"正在识别微信号目录并查找超过 {days} 天的文件...")
+        self.log(f"正在识别微信号目录并查找超过{days}天的文件...")
 
-        # 1. 自动探测路径
         targets = Utils.detect_wechat_paths(self.target_dir, "FileStorage/MsgAttach")
         if not targets:
-            QMessageBox.warning(self, "未找到目标", f"在 {self.target_dir} 下未找到任何 wxid 目录或 MsgAttach 文件夹。")
+            QMessageBox.warning(self, "未找到目标", f"在 {self.target_dir} 下未找到任何wxid目录或MsgAttach文件夹。")
             return
 
         self.log(f"已识别到 {len(targets)} 个目标文件夹: \n" + "\n".join(targets))
-        QApplication.processEvents()  # 刷新UI防止卡顿
+        QApplication.processEvents()
 
-        # 2. 扫描 (建议后续也放入线程，这里暂在主线程)
         files = CoreLogic.scan_cold_files_multi_path(targets, days)
 
         if not files:

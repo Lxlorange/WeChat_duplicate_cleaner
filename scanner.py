@@ -20,15 +20,13 @@ class Utils:
     def get_file_hash(filepath, sample=True):
         try:
             file_size = os.path.getsize(filepath)
-            # 小文件始终全量计算，保证绝对安全
-            if file_size < 2 * 1024 * 1024:  # 2MB以下全量
+            if file_size < 1 * 1024 * 1024:
                 sample = False
 
             with open(filepath, 'rb') as f:
                 if not sample:
                     return hashlib.md5(f.read()).hexdigest()
 
-                # 大文件采样：头+中+尾
                 h = hashlib.md5()
                 h.update(f.read(8192))
                 f.seek(file_size // 2)
@@ -45,17 +43,14 @@ class Utils:
         if not os.path.exists(root_dir): return targets
         root_dir = os.path.normpath(root_dir)
 
-        # 情况1: 直接选了子目录
         if "FileStorage" in root_dir:
             return [root_dir]
 
-        # 情况2: 选了 wxid 目录
         if os.path.exists(os.path.join(root_dir, "FileStorage")):
             p = os.path.join(root_dir, target_sub)
             if os.path.exists(p): targets.append(p)
             return targets
 
-        # 情况3: 选了 WeChat Files 根目录 -> 遍历所有 wxid
         try:
             for item in os.listdir(root_dir):
                 full_path = os.path.join(root_dir, item)
@@ -72,40 +67,31 @@ class CoreLogic:
     @staticmethod
     def normalize_filename(filename):
         """
-        [阀门一优化]：使用正则提取文件“核心名”。
-        去除 (1), (2), _副本, _1, Copy 等常见后缀。
+        使用正则提取文件核心名，去除常见后缀。
         """
         name, ext = os.path.splitext(filename)
-        # 1. 去除括号数字: file(1).txt -> file
         name = re.sub(r'\(\d+\)$', '', name)
-        name = re.sub(r'（\d+）$', '', name)  # 中文括号
-        # 2. 去除常见副本标记
+        name = re.sub(r'（\d+）$', '', name)
         name = re.sub(r'_副本$', '', name)
         name = re.sub(r' - Copy$', '', name)
-        name = re.sub(r'_\d+$', '', name)  # file_1.txt
+        name = re.sub(r'_\d+$', '', name)
         return name.strip().lower()
 
     @staticmethod
     def is_name_similar(name1, name2, threshold=0.6):
-        """
-        混合比对：先正则归一化，再算字符串相似度
-        """
         core1 = CoreLogic.normalize_filename(name1)
         core2 = CoreLogic.normalize_filename(name2)
 
-        # 如果核心名完全一样（比如 "report(1)" 和 "report"），直接返回 True
         if core1 == core2:
             return True
 
-        # 否则计算相似度（防漏网之鱼）
         return difflib.SequenceMatcher(None, core1, core2).ratio() > threshold
 
     @staticmethod
     def scan_mixed_strategy(files_list, progress_callback=None):
         """
-        【混合策略算法】
-        1. 小文件 (<1MB) -> 走 Strict MD5 (安全、去重率高)
-        2. 大文件 (>=1MB) -> 走 Fuzzy Logic (大小+文件名，处理版本差异)
+        小文件 (<1MB) -> Strict MD5
+        大文件 (>=1MB) -> Fuzzy Logic
         """
         small_files = []
         large_files = []
@@ -114,7 +100,7 @@ class CoreLogic:
         for f in files_list:
             try:
                 s = os.path.getsize(f)
-                if s < 1024 * 1024:  # 1MB 阈值
+                if s < 1 * 1024 * 1024:
                     small_files.append(f)
                 else:
                     large_files.append(f)
@@ -123,13 +109,11 @@ class CoreLogic:
 
         results = []
 
-        # --- Phase 1: 小文件 (Strict MD5) ---
         if small_files:
             if progress_callback: progress_callback("分析小文件 (MD5)...")
             from collections import defaultdict
             hash_map = defaultdict(list)
 
-            # 为了性能，先按大小分组，大小一样的才算 Hash
             size_map = defaultdict(list)
             for f in small_files:
                 size_map[os.path.getsize(f)].append(f)
@@ -137,22 +121,20 @@ class CoreLogic:
             for size, paths in size_map.items():
                 if len(paths) < 2: continue
                 for p in paths:
-                    h = Utils.get_file_hash(p, sample=False)  # 小文件全量哈希
+                    h = Utils.get_file_hash(p, sample=False)
                     if h: hash_map[h].append(p)
 
             for h, paths in hash_map.items():
                 if len(paths) > 1:
-                    paths.sort(key=len)  # 保留路径最短
+                    paths.sort(key=len)
                     keep = paths[0]
                     for p in paths[1:]:
                         results.append({
                             'file': p, 'keep': keep, 'reason': 'small_file_strict', 'group': h
                         })
 
-        # --- Phase 2: 大文件 (Fuzzy Versioning) ---
         if large_files:
             if progress_callback: progress_callback("分析大文件 (Fuzzy)...")
-            # 按后缀分组
             ext_groups = {}
             for f in large_files:
                 ext = os.path.splitext(f)[1].lower()
@@ -162,12 +144,9 @@ class CoreLogic:
             for ext, paths in ext_groups.items():
                 if len(paths) < 2: continue
 
-                # 只有文档和视频才做模糊去重，大图片(如RAW)建议还是严格比较，防止误删
                 is_fuzzy_safe = ext in ['.doc', '.docx', '.pdf', '.ppt', '.pptx',
                                         '.xls', '.xlsx', '.mp4', '.mov', '.avi', '.zip', '.rar']
 
-                # 如果不是安全类型，把它们扔回 MD5 逻辑处理（这里简化，暂不处理或仅做严格处理）
-                # 为了代码简洁，这里假设用户选了模糊模式就是想处理这些文档
                 if not is_fuzzy_safe:
                     continue
 
@@ -193,16 +172,13 @@ class CoreLogic:
                         if visited[j]: continue
                         compare = file_meta[j]
 
-                        # 大小差异检查 (30%)
                         if compare['size'] > base['size'] * 1.3: break
 
-                        # 文件名相似度检查 (你的阀门一)
                         if CoreLogic.is_name_similar(base['name'], compare['name']):
                             current_group.append(compare)
                             visited[j] = True
 
                     if len(current_group) > 1:
-                        # 保留最新的
                         current_group.sort(key=lambda x: x['mtime'], reverse=True)
                         keep = current_group[0]
                         for d in current_group[1:]:
@@ -214,7 +190,6 @@ class CoreLogic:
 
         return results
 
-    # ... move_files 和 scan_cold_files 等方法保持不变 ...
     @staticmethod
     def scan_cold_files_multi_path(target_paths, days_threshold):
         cold_files = []
@@ -299,9 +274,7 @@ class ScannerThread(QThread):
             self.progress_text.emit(f"发现 {total_count} 个文件，开始分析...")
             duplicates_found = []
 
-            # --- 核心逻辑分支 ---
             if self.mode == 'strict':
-                # 纯 MD5 模式
                 from collections import defaultdict
                 hash_map = defaultdict(list)
                 for i, f in enumerate(all_files):
@@ -319,15 +292,12 @@ class ScannerThread(QThread):
                         for p in paths[1:]:
                             duplicates_found.append({'file': p, 'keep': keep, 'reason': 'strict_md5', 'group': h})
             else:
-                # 混合模式 (Fuzzy + Strict)
                 self.progress_val.emit(30)
-                # 使用新的混合策略函数
                 duplicates_found = CoreLogic.scan_mixed_strategy(
                     all_files,
                     progress_callback=lambda msg: self.progress_text.emit(msg)
                 )
 
-            # 保存
             self.progress_text.emit("正在保存结果...")
             self.db.save_duplicates(duplicates_found)
             self.progress_val.emit(100)
