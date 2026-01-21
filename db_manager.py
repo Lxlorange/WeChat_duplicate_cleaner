@@ -3,72 +3,56 @@ import os
 import threading
 
 class DatabaseManager:
-    def __init__(self):
-        self.db_path = 'wechat_files.db'
-        self.thread_local = threading.local()
-        # 在主线程创建表
-        self._get_conn().close()
-        
+    def __init__(self, db_path='wechat_files.db'):
+        self.db_path = db_path
+        self.lock = threading.Lock()
+        self._init_db()
+
     def _get_conn(self):
-        # 创建新的连接
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS files (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            md5 TEXT,
-            filepath TEXT,
-            is_duplicate BOOLEAN
-        )
-        ''')
-        conn.commit()
-        return conn
-        
-    def get_connection(self):
-        # 为每个线程获取独立的数据库连接
-        if not hasattr(self.thread_local, 'connection'):
-            self.thread_local.connection = self._get_conn()
-        return self.thread_local.connection
-        
-    def save_scan_results(self, files_dict):
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        try:
-            cursor.execute('DELETE FROM files')  # 清空旧数据
-            
-            for md5, filepaths in files_dict.items():
-                # 第一个文件保留，其余标记为重复
-                cursor.execute('INSERT INTO files (md5, filepath, is_duplicate) VALUES (?, ?, ?)',
-                             (md5, filepaths[0], False))
-                
-                for filepath in filepaths[1:]:
-                    cursor.execute('INSERT INTO files (md5, filepath, is_duplicate) VALUES (?, ?, ?)',
-                                 (md5, filepath, True))
-                    
+        return sqlite3.connect(self.db_path, check_same_thread=False)
+
+    def _init_db(self):
+        with self.lock:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS scan_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filepath TEXT,
+                original_path TEXT, 
+                size INTEGER,
+                reason TEXT, 
+                group_id TEXT
+            )
+            ''')
             conn.commit()
-        except Exception as e:
-            conn.rollback()
-            raise e
-        
-    def delete_duplicates(self):
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        try:
-            cursor.execute('SELECT filepath FROM files WHERE is_duplicate = 1')
-            
-            for (filepath,) in cursor.fetchall():
-                try:
-                    os.remove(filepath)
-                except OSError as e:
-                    print(f"无法删除文件: {filepath}: {str(e)}")
-                    
-            cursor.execute('DELETE FROM files WHERE is_duplicate = 1')
+            conn.close()
+
+    def clear_results(self):
+        with self.lock:
+            conn = self._get_conn()
+            conn.execute('DELETE FROM scan_results')
             conn.commit()
-        except Exception as e:
-            conn.rollback()
-            raise e
-        
-    def close_connection(self):
-        if hasattr(self.thread_local, 'connection'):
-            self.thread_local.connection.close()
-            del self.thread_local.connection 
+            conn.close()
+
+    def save_duplicates(self, duplicates_list):
+        with self.lock:
+            conn = self._get_conn()
+            data = [
+                (d['file'], d.get('keep', ''), os.path.getsize(d['file']), d['reason'], d['group'])
+                for d in duplicates_list if os.path.exists(d['file'])
+            ]
+            conn.executemany(
+                'INSERT INTO scan_results (filepath, original_path, size, reason, group_id) VALUES (?, ?, ?, ?, ?)',
+                data
+            )
+            conn.commit()
+            conn.close()
+
+    def get_results(self):
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute('SELECT filepath, original_path, size, reason FROM scan_results')
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
